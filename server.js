@@ -1185,7 +1185,7 @@ app.post('/api/discord-lobbies/:lobbyId/close', async (req, res) => {
 });
 
 app.post('/api/drafts', (req, res) => {
-  const { teams, unassignedPlayers, playersPerTeam, playerMeta = {} } = req.body;
+  const { teams, unassignedPlayers, playersPerTeam, playerMeta = {}, lobbyId = '', hostToken = '' } = req.body;
   const parsedPlayersPerTeam = Number.parseInt(playersPerTeam, 10);
   const normalizedPlayerMeta = normalizePlayerMeta(playerMeta);
 
@@ -1209,13 +1209,8 @@ app.post('/api/drafts', (req, res) => {
     captainAvatarUrl: String(team.captainAvatarUrl || normalizedPlayerMeta[team.captain]?.avatarUrl || ''),
     players: normalizePlayers(team.players, parsedPlayersPerTeam),
   }));
-  const missingCaptainIdentity = normalizedTeams.some((team) => !/^\d{17,20}$/.test(team.captainUserId));
-
-  if (missingCaptainIdentity) {
-    return res.status(400).json({
-      error: 'Every captain needs a Discord user ID before a locked draft can start.'
-    });
-  }
+  const lobby = lobbyId ? findLobby(lobbyId) : null;
+  const verifiedHostToken = Boolean(lobby && lobby.hostToken && lobby.hostToken === hostToken);
 
   const now = Date.now();
   const draft = {
@@ -1224,6 +1219,8 @@ app.post('/api/drafts', (req, res) => {
     teams: normalizedTeams,
     unassignedPlayers: normalizePlayers(unassignedPlayers, 500),
     playerMeta: normalizedPlayerMeta,
+    lobbyId,
+    hostToken: verifiedHostToken ? hostToken : '',
     playersPerTeam: parsedPlayersPerTeam,
     currentTeamIndex: 0,
     turnStartedAt: null,
@@ -1254,10 +1251,7 @@ app.get('/api/drafts/:draftId', (req, res) => {
 app.post('/api/drafts/:draftId/pick', (req, res) => {
   const user = getSessionUser(req);
   const player = String(req.body.player || '').trim();
-
-  if (!user) {
-    return res.status(401).json({ error: 'Sign in with Discord before drafting.' });
-  }
+  const hostToken = String(req.body.hostToken || '');
 
   if (!player) {
     return res.status(400).json({ error: 'A player is required.' });
@@ -1271,13 +1265,19 @@ app.post('/api/drafts/:draftId/pick', (req, res) => {
     }
 
     const activeTeam = currentDraft.teams[currentDraft.currentTeamIndex];
+    const isHostOverride = Boolean(currentDraft.hostToken && currentDraft.hostToken === hostToken);
 
     if (!activeTeam) {
       rejectedError = 'No captain is currently on the clock.';
       return currentDraft;
     }
 
-    if (activeTeam.captainUserId !== user.id) {
+    if (!isHostOverride && !user) {
+      rejectedError = 'Sign in with Discord before drafting.';
+      return currentDraft;
+    }
+
+    if (!isHostOverride && (!activeTeam.captainUserId || activeTeam.captainUserId !== user.id)) {
       rejectedError = `${activeTeam.captain} is on the clock.`;
       return currentDraft;
     }

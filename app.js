@@ -704,6 +704,8 @@ async function createServerDraft() {
       unassignedPlayers: state.unassignedPlayers,
       playersPerTeam: numberValue(state.playersPerTeam),
       playerMeta: state.playerMeta,
+      lobbyId: state.discordLobbyId,
+      hostToken: state.sharedLobbyHostToken,
     }),
   });
   const data = await response.json().catch(() => ({}));
@@ -732,7 +734,10 @@ async function submitServerDraftPick(player) {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ player }),
+    body: JSON.stringify({
+      player,
+      hostToken: state.isSharedLobbyHost ? state.sharedLobbyHostToken : '',
+    }),
   });
   const data = await response.json().catch(() => ({}));
 
@@ -785,6 +790,14 @@ async function refreshAuthoritativeDraftState(options = {}) {
   }
 
   return draft;
+}
+
+async function syncHostCorrection() {
+  if (!state.isSharedLobbyHost || isCaptainDraftActive()) {
+    return;
+  }
+
+  await publishSharedLobbyState().catch(() => {});
 }
 
 function randomizeTeams() {
@@ -1717,6 +1730,7 @@ function renderCaptainSelectionStep() {
   const nextTeamNumber = state.captains.findIndex((captain) => !captain) + 1;
   const availablePlayers = state.playerNames.filter((player) => !selectedCaptains.has(player));
   const captainsComplete = state.captains.length > 0 && state.captains.every(Boolean);
+  const manualCaptainCount = state.captains.filter((captain) => captain && !state.playerDiscordIds[captain]).length;
 
   renderStepShell({
     title: 'Pick team captains',
@@ -1732,6 +1746,7 @@ function renderCaptainSelectionStep() {
       </div>
       ${nextTeamNumber > 0 ? `<div class="message">Selecting captain for Team ${nextTeamNumber}</div>` : ''}
       ${captainsComplete ? '<div class="message success">All captains are selected. Start the draft when ready.</div>' : ''}
+      ${captainsComplete && manualCaptainCount > 0 ? `<div class="message warning">${manualCaptainCount} captain(s) are not linked to Discord. Host override will allow the host to make those picks.</div>` : ''}
       <div class="captain-picker">
         ${availablePlayers.map((player) => `
           <div class="captain-player-row">
@@ -1793,14 +1808,6 @@ async function startLockedCaptainDraft() {
   }
 
   buildManualTeamsWithCaptains();
-  const missingDiscordCaptain = state.teams.find((team) => !team.captainUserId);
-
-  if (missingDiscordCaptain) {
-    state.teams = [];
-    state.unassignedPlayers = [];
-    throw new Error(`${missingDiscordCaptain.captain} needs to come from the Discord queue before locked drafting can start.`);
-  }
-
   const draft = await createServerDraft();
 
   syncServerDraftToState(draft);
@@ -1936,7 +1943,9 @@ function renderDraftStatus() {
   const activeTeam = state.teams[state.draft.currentTeamIndex];
   const userLabel = state.sessionUser
     ? `Signed in as ${state.sessionUser.globalName || state.sessionUser.username}`
-    : 'Captains must sign in to pick';
+    : state.isSharedLobbyHost
+      ? 'Host override enabled'
+      : 'Captains must sign in to pick';
   const draftLink = state.serverDraftId ? `${window.location.origin}${window.location.pathname}?draft=${state.serverDraftId}` : '';
 
   if (!activeTeam) {
@@ -1969,7 +1978,15 @@ function renderDraftStatus() {
 }
 
 function canCurrentUserDraft() {
-  if (!isCaptainDraftActive() || !state.sessionUser) {
+  if (!isCaptainDraftActive()) {
+    return false;
+  }
+
+  if (state.isSharedLobbyHost) {
+    return true;
+  }
+
+  if (!state.sessionUser) {
     return false;
   }
 
@@ -1979,7 +1996,9 @@ function canCurrentUserDraft() {
 }
 
 function renderMovePanel() {
-  if (state.sortMode === 'manual') {
+  const canUseMovePanel = state.sortMode !== 'manual' || (state.isSharedLobbyHost && !isCaptainDraftActive());
+
+  if (!canUseMovePanel) {
     return '';
   }
 
@@ -2032,7 +2051,7 @@ function renderTeamCard(team) {
   const missingSlots = Math.max(numberValue(state.playersPerTeam) - team.players.length, 0);
   const emptySlots = Array.from({ length: missingSlots }, () => '<li class="empty-slot">Empty slot</li>').join('');
   const draftActive = isCaptainDraftActive();
-  const canManuallyEditPlayers = state.sortMode === 'manual' && !state.useCaptains;
+  const canManuallyEditPlayers = state.sortMode === 'manual' && (!state.useCaptains || (state.isSharedLobbyHost && !draftActive));
   const isActiveDraftTeam = draftActive && state.teams[state.draft.currentTeamIndex]?.id === team.id;
 
   return `
@@ -2166,6 +2185,7 @@ function assignUnassignedPlayerToTeam(targetTeamId) {
   targetTeam.players.push(state.assignmentPlayer);
   state.unassignedPlayers = state.unassignedPlayers.filter((name) => name !== state.assignmentPlayer);
   state.assignmentPlayer = null;
+  syncHostCorrection();
   render();
 }
 
@@ -2178,6 +2198,7 @@ function unassignPlayer(teamId, player) {
 
   team.players = team.players.filter((name) => name !== player);
   state.unassignedPlayers.push(player);
+  syncHostCorrection();
   render();
 }
 
@@ -2203,6 +2224,7 @@ function confirmSwap() {
     player === targetPlayer ? state.swapSource.player : player
   ));
   state.swapSource = null;
+  syncHostCorrection();
   render();
 }
 
@@ -2232,6 +2254,7 @@ function moveSelectedPlayer() {
 
   fromTeam.players = fromTeam.players.filter((name) => name !== player);
   targetTeam.players.push(player);
+  syncHostCorrection();
   render();
 }
 
