@@ -2,8 +2,26 @@ const wizard = document.getElementById('wizard');
 const resetButton = document.getElementById('resetButton');
 const themeToggleButton = document.getElementById('themeToggleButton');
 const themeToggleIcon = document.getElementById('themeToggleIcon');
-const SMART_PARSE_URL = 'http://localhost:5050/api/parse-players';
+const SMART_PARSE_URL = '/api/parse-players';
+const DISCORD_IMPORT_URL = '/api/discord-channel-players';
+const DISCORD_LOBBIES_URL = '/api/discord-lobbies';
+const CONFIG_URL = '/api/config';
+const SESSION_URL = '/api/session';
+const LOGOUT_URL = '/api/logout';
+const DISCORD_AUTH_URL = '/auth/discord';
+const DRAFTS_URL = '/api/drafts';
 const THEME_STORAGE_KEY = 'teamRandomizerTheme';
+const DISCORD_CHANNEL_STORAGE_KEY = 'teamRandomizerDiscordChannelId';
+const DISCORD_LOBBY_STORAGE_KEY = 'teamRandomizerDiscordLobbyId';
+const DISCORD_HOST_STORAGE_KEY = 'teamRandomizerDiscordHostUserId';
+const SHARED_LOBBY_HOST_TOKEN_PREFIX = 'teamRandomizerLobbyHostToken:';
+const SERVER_DRAFT_STORAGE_KEY = 'teamRandomizerServerDraftId';
+const DRAFT_TURN_SECONDS = 90;
+let draftTimerId = null;
+let draftPollTimerId = null;
+let lobbyPollTimerId = null;
+let lobbyPublishTimerId = null;
+let isApplyingSharedLobbyState = false;
 const SUN_ICON = `
   <svg class="theme-icon" viewBox="0 0 24 24" focusable="false">
     <circle cx="12" cy="12" r="4.2"></circle>
@@ -38,6 +56,24 @@ const state = {
   assignmentPlayer: null,
   swapSource: null,
   warningAccepted: false,
+  draft: {
+    active: false,
+    currentTeamIndex: 0,
+    turnStartedAt: null,
+    turnEndsAt: null,
+  },
+  discordChannelId: '',
+  discordLobbyId: '',
+  sharedLobbyHostToken: '',
+  isSharedLobbyHost: false,
+  discordLobby: null,
+  discordHostUserId: '',
+  sessionUser: null,
+  playerDiscordIds: {},
+  playerMeta: {},
+  serverDraftId: '',
+  serverDraft: null,
+  publicBaseUrl: '',
 };
 
 function numberValue(value) {
@@ -91,6 +127,221 @@ function saveTheme(theme) {
   }
 }
 
+function getSavedDiscordChannelId() {
+  try {
+    return localStorage.getItem(DISCORD_CHANNEL_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveDiscordChannelId(channelId) {
+  try {
+    localStorage.setItem(DISCORD_CHANNEL_STORAGE_KEY, channelId);
+  } catch {
+    // Discord import still works for this session if storage is unavailable.
+  }
+}
+
+function getSavedDiscordLobbyId() {
+  try {
+    return localStorage.getItem(DISCORD_LOBBY_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveDiscordLobbyId(lobbyId) {
+  try {
+    if (lobbyId) {
+      localStorage.setItem(DISCORD_LOBBY_STORAGE_KEY, lobbyId);
+    } else {
+      localStorage.removeItem(DISCORD_LOBBY_STORAGE_KEY);
+    }
+  } catch {
+    // Queue controls still work for this session if storage is unavailable.
+  }
+}
+
+function getSavedDiscordHostUserId() {
+  try {
+    return localStorage.getItem(DISCORD_HOST_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveDiscordHostUserId(userId) {
+  try {
+    localStorage.setItem(DISCORD_HOST_STORAGE_KEY, userId);
+  } catch {
+    // Queue creation still works for this session if storage is unavailable.
+  }
+}
+
+function getSavedServerDraftId() {
+  try {
+    return localStorage.getItem(SERVER_DRAFT_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveServerDraftId(draftId) {
+  try {
+    if (draftId) {
+      localStorage.setItem(SERVER_DRAFT_STORAGE_KEY, draftId);
+    } else {
+      localStorage.removeItem(SERVER_DRAFT_STORAGE_KEY);
+    }
+  } catch {
+    // Shared draft links still work for this session if storage is unavailable.
+  }
+}
+
+function getSavedSharedLobbyHostToken(lobbyId) {
+  try {
+    return localStorage.getItem(`${SHARED_LOBBY_HOST_TOKEN_PREFIX}${lobbyId}`) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveSharedLobbyHostToken(lobbyId, hostToken) {
+  try {
+    localStorage.setItem(`${SHARED_LOBBY_HOST_TOKEN_PREFIX}${lobbyId}`, hostToken);
+  } catch {
+    // Viewers can still watch; this only affects host recovery after reload.
+  }
+}
+
+function getShareLobbyIdFromUrl() {
+  return new URLSearchParams(window.location.search).get('lobby') || '';
+}
+
+function getSharedLobbyUrl(lobbyId) {
+  const baseUrl = state.publicBaseUrl || window.location.origin;
+
+  return `${baseUrl}${window.location.pathname}?lobby=${lobbyId}`;
+}
+
+function isSharedLobbyViewer() {
+  return Boolean(state.discordLobbyId && !state.isSharedLobbyHost);
+}
+
+function renderSharedLobbyBanner() {
+  if (!state.discordLobbyId) {
+    return '';
+  }
+
+  const label = state.isSharedLobbyHost ? 'Hosting synced lobby' : 'Viewing synced lobby';
+  const url = getSharedLobbyUrl(state.discordLobbyId);
+  const queuedPlayer = getCurrentQueuedPlayer();
+  const roleLabel = state.isSharedLobbyHost
+    ? 'Host controls are enabled in this browser.'
+    : queuedPlayer
+      ? `Signed in as queued player: ${queuedPlayer.displayName}`
+      : state.sessionUser
+        ? 'Signed in, but this Discord account is not in the queue.'
+        : 'Viewing only. Sign in with Discord to unlock player or captain permissions.';
+
+  return `
+    <div class="shared-lobby-banner">
+      <span>${label}</span>
+      <code>${escapeHtml(url)}</code>
+      <button id="copyLobbyLinkButton" class="secondary-button" type="button" data-url="${escapeHtml(url)}">Copy Join Link</button>
+      <small>${escapeHtml(roleLabel)}</small>
+      ${!state.sessionUser && !state.isSharedLobbyHost ? `<a class="button-link secondary-button" href="${DISCORD_AUTH_URL}">Sign In with Discord</a>` : ''}
+    </div>
+  `;
+}
+
+function getCurrentQueuedPlayer() {
+  if (!state.sessionUser || !state.discordLobby?.players) {
+    return null;
+  }
+
+  return state.discordLobby.players.find((player) => player.userId === state.sessionUser.id) || null;
+}
+
+function getShareableAppState() {
+  const sharedDiscordLobby = state.discordLobby
+    ? {
+      ...state.discordLobby,
+      appState: null,
+    }
+    : null;
+
+  return {
+    step: state.step,
+    totalPlayers: state.totalPlayers,
+    playersPerTeam: state.playersPerTeam,
+    teamCount: state.teamCount,
+    playerNames: state.playerNames,
+    teams: state.teams,
+    unassignedPlayers: state.unassignedPlayers,
+    sortMode: state.sortMode,
+    useCaptains: state.useCaptains,
+    captains: state.captains,
+    warningAccepted: state.warningAccepted,
+    discordLobbyId: state.discordLobbyId,
+    discordLobby: sharedDiscordLobby,
+    playerDiscordIds: state.playerDiscordIds,
+    playerMeta: state.playerMeta,
+    serverDraftId: state.serverDraftId,
+    serverDraft: state.serverDraft,
+    draft: state.draft,
+  };
+}
+
+function applyShareableAppState(appState) {
+  if (!appState) {
+    return;
+  }
+
+  isApplyingSharedLobbyState = true;
+  Object.assign(state, {
+    step: appState.step || 1,
+    totalPlayers: appState.totalPlayers || '',
+    playersPerTeam: appState.playersPerTeam || '',
+    teamCount: appState.teamCount || '',
+    playerNames: Array.isArray(appState.playerNames) ? appState.playerNames : [],
+    teams: Array.isArray(appState.teams) ? appState.teams : [],
+    unassignedPlayers: Array.isArray(appState.unassignedPlayers) ? appState.unassignedPlayers : [],
+    sortMode: appState.sortMode || 'random',
+    useCaptains: Boolean(appState.useCaptains),
+    captains: Array.isArray(appState.captains) ? appState.captains : [],
+    warningAccepted: Boolean(appState.warningAccepted),
+    discordLobbyId: appState.discordLobbyId || state.discordLobbyId,
+    discordLobby: appState.discordLobby || state.discordLobby,
+    playerDiscordIds: appState.playerDiscordIds || {},
+    playerMeta: appState.playerMeta || {},
+    serverDraftId: appState.serverDraftId || '',
+    serverDraft: appState.serverDraft || null,
+    draft: appState.draft || state.draft,
+  });
+  isApplyingSharedLobbyState = false;
+}
+
+function getPlayerMeta(name) {
+  return state.playerMeta[name] || {};
+}
+
+function renderPlayerIdentity(name, options = {}) {
+  const meta = getPlayerMeta(name);
+  const crown = options.captain ? '<span class="captain-crown" title="Team captain">♛</span>' : '';
+  const avatar = meta.avatarUrl
+    ? `<img class="player-avatar" src="${escapeHtml(meta.avatarUrl)}" alt="" />`
+    : '<span class="player-avatar player-avatar-fallback" aria-hidden="true"></span>';
+
+  return `
+    <span class="player-identity">
+      ${avatar}
+      <span>${crown}${escapeHtml(name)}</span>
+    </span>
+  `;
+}
+
 function applyTheme(theme) {
   const isDarkTheme = theme === 'dark';
 
@@ -106,6 +357,17 @@ function initializeTheme() {
   const initialTheme = savedTheme || (prefersDark ? 'dark' : 'light');
 
   applyTheme(initialTheme);
+}
+
+function initializeSavedSettings() {
+  const sharedLobbyId = getShareLobbyIdFromUrl();
+
+  state.discordChannelId = getSavedDiscordChannelId();
+  state.discordLobbyId = sharedLobbyId;
+  state.sharedLobbyHostToken = sharedLobbyId ? getSavedSharedLobbyHostToken(sharedLobbyId) : '';
+  state.isSharedLobbyHost = Boolean(sharedLobbyId && state.sharedLobbyHostToken);
+  state.discordHostUserId = getSavedDiscordHostUserId();
+  state.serverDraftId = new URLSearchParams(window.location.search).get('draft') || getSavedServerDraftId();
 }
 
 function parseQuickAddNames(value) {
@@ -260,6 +522,243 @@ async function parseNamesWithAi(value) {
   return Array.isArray(data.players) ? data.players : [];
 }
 
+async function importPlayersFromDiscord(channelId) {
+  const response = await fetch(DISCORD_IMPORT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      channelId,
+      maxPlayers: numberValue(state.totalPlayers),
+      messageLimit: 100,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Discord import failed.');
+  }
+
+  return Array.isArray(data.players) ? data.players : [];
+}
+
+async function createDiscordLobby(channelId) {
+  const response = await fetch(DISCORD_LOBBIES_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      channelId,
+      totalPlayers: numberValue(state.totalPlayers),
+      playersPerTeam: numberValue(state.playersPerTeam),
+      teamCount: numberValue(state.teamCount),
+      hostUserId: state.discordHostUserId,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Discord queue could not be created.');
+  }
+
+  return data;
+}
+
+async function fetchDiscordLobby(lobbyId) {
+  const response = await fetch(`${DISCORD_LOBBIES_URL}/${encodeURIComponent(lobbyId)}`);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Discord queue could not be loaded.');
+  }
+
+  return data.lobby;
+}
+
+async function closeDiscordLobby(lobbyId) {
+  const response = await fetch(`${DISCORD_LOBBIES_URL}/${encodeURIComponent(lobbyId)}/close`, {
+    method: 'POST',
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Discord queue could not be closed.');
+  }
+
+  return data.lobby;
+}
+
+async function publishSharedLobbyState() {
+  if (!state.isSharedLobbyHost || !state.discordLobbyId || !state.sharedLobbyHostToken || isApplyingSharedLobbyState) {
+    return;
+  }
+
+  const response = await fetch(`${DISCORD_LOBBIES_URL}/${encodeURIComponent(state.discordLobbyId)}/state`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      hostToken: state.sharedLobbyHostToken,
+      appState: getShareableAppState(),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Lobby sync failed.');
+  }
+}
+
+function scheduleSharedLobbyPublish() {
+  if (!state.isSharedLobbyHost || isApplyingSharedLobbyState) {
+    return;
+  }
+
+  window.clearTimeout(lobbyPublishTimerId);
+  lobbyPublishTimerId = window.setTimeout(() => {
+    publishSharedLobbyState().catch(() => {});
+  }, 250);
+}
+
+function startSharedLobbyPolling() {
+  stopSharedLobbyPolling();
+
+  if (!state.discordLobbyId || state.isSharedLobbyHost) {
+    return;
+  }
+
+  lobbyPollTimerId = window.setInterval(async () => {
+    try {
+      const lobby = await fetchDiscordLobby(state.discordLobbyId);
+      applyShareableAppState(lobby.appState);
+      state.discordLobby = {
+        ...lobby,
+        appState: null,
+      };
+      render();
+    } catch {
+      stopSharedLobbyPolling();
+    }
+  }, 2000);
+}
+
+function stopSharedLobbyPolling() {
+  if (lobbyPollTimerId) {
+    window.clearInterval(lobbyPollTimerId);
+    lobbyPollTimerId = null;
+  }
+}
+
+async function fetchSession() {
+  const response = await fetch(SESSION_URL);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Session could not be loaded.');
+  }
+
+  return data.user || null;
+}
+
+async function fetchConfig() {
+  const response = await fetch(CONFIG_URL);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    return {};
+  }
+
+  return data;
+}
+
+async function logoutDiscord() {
+  await fetch(LOGOUT_URL, { method: 'POST' });
+  state.sessionUser = null;
+  render();
+}
+
+async function createServerDraft() {
+  const response = await fetch(DRAFTS_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      teams: state.teams.map((team) => ({
+        ...team,
+        captainUserId: team.captainUserId || state.playerDiscordIds[team.captain] || '',
+        captainAvatarUrl: team.captainAvatarUrl || getPlayerMeta(team.captain).avatarUrl || '',
+      })),
+      unassignedPlayers: state.unassignedPlayers,
+      playersPerTeam: numberValue(state.playersPerTeam),
+      playerMeta: state.playerMeta,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Draft could not be created.');
+  }
+
+  return data.draft;
+}
+
+async function fetchServerDraft(draftId) {
+  const response = await fetch(`${DRAFTS_URL}/${encodeURIComponent(draftId)}`);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Draft could not be loaded.');
+  }
+
+  return data.draft;
+}
+
+async function submitServerDraftPick(player) {
+  const response = await fetch(`${DRAFTS_URL}/${encodeURIComponent(state.serverDraftId)}/pick`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ player }),
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    if (data.draft) {
+      syncServerDraftToState(data.draft);
+    }
+
+    throw new Error(data.error || 'Draft pick was rejected.');
+  }
+
+  return data.draft;
+}
+
+async function syncSharedLobbyDraft(draft) {
+  if (!state.discordLobbyId || !draft?.id) {
+    return;
+  }
+
+  const response = await fetch(`${DISCORD_LOBBIES_URL}/${encodeURIComponent(state.discordLobbyId)}/sync-draft`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ draftId: draft.id }),
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (response.ok && data.lobby) {
+    state.discordLobby = {
+      ...data.lobby,
+      appState: null,
+    };
+  }
+}
+
 function randomizeTeams() {
   const players = shuffle(state.playerNames.filter(Boolean));
   const teams = Array.from({ length: numberValue(state.teamCount) }, (_, index) => ({
@@ -276,10 +775,12 @@ function randomizeTeams() {
 
   state.teams = teams;
   state.unassignedPlayers = [];
+  resetDraftState();
 }
 
 function startManualSort() {
   state.sortMode = 'manual';
+  resetDraftState();
   state.teams = Array.from({ length: numberValue(state.teamCount) }, (_, index) => ({
     id: index + 1,
     name: `Team ${index + 1}`,
@@ -292,6 +793,7 @@ function startManualSort() {
 function startManualSortWithCaptains() {
   state.sortMode = 'manual';
   state.useCaptains = true;
+  resetDraftState();
   state.captains = Array.from({ length: numberValue(state.teamCount) }, () => '');
   state.step = 8;
   render();
@@ -300,6 +802,7 @@ function startManualSortWithCaptains() {
 function startManualSortWithoutCaptains() {
   state.useCaptains = false;
   state.captains = [];
+  resetDraftState();
   startManualSort();
   state.step = 6;
   render();
@@ -313,9 +816,201 @@ function buildManualTeamsWithCaptains() {
     id: index + 1,
     name: `${captain}'s Team`,
     captain,
+    captainUserId: state.playerDiscordIds[captain] || '',
+    captainAvatarUrl: getPlayerMeta(captain).avatarUrl || '',
     players: [captain],
   }));
   state.unassignedPlayers = state.playerNames.filter((player) => !captainSet.has(player));
+}
+
+function resetDraftState() {
+  stopDraftTimer();
+  stopDraftPolling();
+  state.draft = {
+    active: false,
+    currentTeamIndex: 0,
+    turnStartedAt: null,
+    turnEndsAt: null,
+  };
+}
+
+function syncServerDraftToState(draft) {
+  state.serverDraft = draft;
+  state.serverDraftId = draft.id;
+  state.sortMode = 'manual';
+  state.useCaptains = true;
+  state.teams = draft.teams;
+  state.unassignedPlayers = draft.unassignedPlayers;
+  state.playersPerTeam = String(draft.playersPerTeam);
+  state.teamCount = String(draft.teams.length);
+  state.totalPlayers = String(draft.teams.reduce((total, team) => total + team.players.length, 0) + draft.unassignedPlayers.length);
+  state.playerNames = [
+    ...draft.teams.flatMap((team) => team.players),
+    ...draft.unassignedPlayers,
+  ];
+  state.captains = draft.teams.map((team) => team.captain);
+  state.playerMeta = draft.playerMeta || {};
+  state.playerDiscordIds = Object.fromEntries(
+    Object.entries(state.playerMeta)
+      .filter(([, meta]) => meta.userId)
+      .map(([name, meta]) => [name, meta.userId])
+  );
+  state.draft = {
+    active: draft.status === 'active',
+    currentTeamIndex: draft.currentTeamIndex,
+    turnStartedAt: draft.turnStartedAt ? Date.parse(draft.turnStartedAt) : null,
+    turnEndsAt: draft.turnEndsAt ? Date.parse(draft.turnEndsAt) : null,
+  };
+  state.step = 6;
+  saveServerDraftId(draft.id);
+  startDraftTimer();
+  startDraftPolling();
+}
+
+function startDraftPolling() {
+  stopDraftPolling();
+
+  if (!state.serverDraftId) {
+    return;
+  }
+
+  draftPollTimerId = window.setInterval(async () => {
+    try {
+      const draft = await fetchServerDraft(state.serverDraftId);
+      syncServerDraftToState(draft);
+      render();
+    } catch {
+      stopDraftPolling();
+    }
+  }, 5000);
+}
+
+function stopDraftPolling() {
+  if (draftPollTimerId) {
+    window.clearInterval(draftPollTimerId);
+    draftPollTimerId = null;
+  }
+}
+
+function startCaptainDraft() {
+  state.draft = {
+    active: true,
+    currentTeamIndex: getNextDraftTeamIndex(-1),
+    turnStartedAt: Date.now(),
+    turnEndsAt: Date.now() + (DRAFT_TURN_SECONDS * 1000),
+  };
+  startDraftTimer();
+}
+
+function startDraftTimer() {
+  stopDraftTimer();
+  draftTimerId = window.setInterval(handleDraftTimerTick, 1000);
+}
+
+function stopDraftTimer() {
+  if (draftTimerId) {
+    window.clearInterval(draftTimerId);
+    draftTimerId = null;
+  }
+}
+
+function isCaptainDraftActive() {
+  return state.sortMode === 'manual' && state.useCaptains && state.draft.active;
+}
+
+function isTeamFull(team) {
+  return team.players.length >= numberValue(state.playersPerTeam);
+}
+
+function isDraftComplete() {
+  return (
+    !state.unassignedPlayers.length ||
+    state.teams.every((team) => isTeamFull(team))
+  );
+}
+
+function getNextDraftTeamIndex(currentIndex) {
+  if (!state.teams.length || state.teams.every((team) => isTeamFull(team))) {
+    return -1;
+  }
+
+  for (let offset = 1; offset <= state.teams.length; offset += 1) {
+    const teamIndex = (currentIndex + offset + state.teams.length) % state.teams.length;
+
+    if (!isTeamFull(state.teams[teamIndex])) {
+      return teamIndex;
+    }
+  }
+
+  return -1;
+}
+
+function beginDraftTurn(teamIndex) {
+  if (teamIndex < 0 || isDraftComplete()) {
+    state.draft.active = false;
+    stopDraftTimer();
+    return;
+  }
+
+  state.draft.currentTeamIndex = teamIndex;
+  state.draft.turnStartedAt = Date.now();
+  state.draft.turnEndsAt = Date.now() + (DRAFT_TURN_SECONDS * 1000);
+  startDraftTimer();
+}
+
+function advanceDraftTurn() {
+  beginDraftTurn(getNextDraftTeamIndex(state.draft.currentTeamIndex));
+}
+
+function getDraftSecondsRemaining() {
+  if (!isCaptainDraftActive() || !state.draft.turnEndsAt) {
+    return 0;
+  }
+
+  return Math.max(Math.ceil((state.draft.turnEndsAt - Date.now()) / 1000), 0);
+}
+
+function formatDraftTime(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function handleDraftTimerTick() {
+  if (!isCaptainDraftActive()) {
+    stopDraftTimer();
+    return;
+  }
+
+  if (isDraftComplete()) {
+    state.draft.active = false;
+    stopDraftTimer();
+    render();
+    return;
+  }
+
+  if (getDraftSecondsRemaining() <= 0) {
+    if (state.serverDraftId) {
+      fetchServerDraft(state.serverDraftId)
+        .then((draft) => {
+          syncServerDraftToState(draft);
+          render();
+        })
+        .catch(() => {});
+      return;
+    }
+
+    advanceDraftTurn();
+    render();
+    return;
+  }
+
+  const timer = document.getElementById('draftTimerValue');
+
+  if (timer) {
+    timer.textContent = formatDraftTime(getDraftSecondsRemaining());
+  }
 }
 
 function render() {
@@ -327,11 +1022,57 @@ function render() {
   if (state.step === 6) renderTeamsStep();
   if (state.step === 7) renderCaptainQuestionStep();
   if (state.step === 8) renderCaptainSelectionStep();
+  bindSharedLobbyActions();
+  applySharedViewerLocks();
+  scheduleSharedLobbyPublish();
+}
+
+function applySharedViewerLocks() {
+  if (!isSharedLobbyViewer()) {
+    return;
+  }
+
+  const draftAllowed = canCurrentUserDraft();
+
+  wizard.querySelectorAll('input, textarea, select').forEach((control) => {
+    control.disabled = true;
+  });
+  wizard.querySelectorAll('button').forEach((button) => {
+    if (button.id === 'discordLogoutButton') {
+      return;
+    }
+
+    if (draftAllowed && button.classList.contains('assign-player-button')) {
+      return;
+    }
+
+    button.disabled = true;
+  });
+}
+
+function bindSharedLobbyActions() {
+  const copyButton = document.getElementById('copyLobbyLinkButton');
+
+  if (!copyButton) {
+    return;
+  }
+
+  copyButton.addEventListener('click', async () => {
+    const url = copyButton.dataset.url;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      copyButton.textContent = 'Copied';
+    } catch {
+      window.prompt('Copy join link', url);
+    }
+  });
 }
 
 function renderStepShell({ title, copy, body, actions }) {
   wizard.innerHTML = `
     <section class="step-card">
+      ${renderSharedLobbyBanner()}
       <div>
         <h2 class="step-title">${title}</h2>
         <p class="step-copy">${copy}</p>
@@ -483,6 +1224,30 @@ function renderTeamMathMessage() {
 }
 
 function renderPlayerNamesStep() {
+  const queuedPlayers = state.discordLobby?.players || [];
+  const queueStatus = state.discordLobby
+    ? `
+      <div class="discord-queue-status">
+        <div>
+          <strong>${queuedPlayers.length}/${state.discordLobby.totalPlayers} queued</strong>
+          <span>${state.discordLobby.status === 'open' ? 'Queue open' : 'Queue closed'}</span>
+        </div>
+        ${queuedPlayers.length > 0 ? `
+          <ol>
+            ${queuedPlayers.map((player) => `
+              <li>
+                <span class="player-identity">
+                  ${player.avatarUrl ? `<img class="player-avatar" src="${escapeHtml(player.avatarUrl)}" alt="" />` : '<span class="player-avatar player-avatar-fallback" aria-hidden="true"></span>'}
+                  <span>${escapeHtml(player.displayName)}</span>
+                </span>
+              </li>
+            `).join('')}
+          </ol>
+        ` : '<p>No one has joined the queue yet.</p>'}
+      </div>
+    `
+    : '';
+
   renderStepShell({
     title: 'Add player names',
     copy: 'Fill in each player slot. You can keep the default names if you just want a quick test.',
@@ -498,6 +1263,39 @@ function renderPlayerNamesStep() {
           <button id="clearNamesButton" class="secondary-button" type="button">Clear Names</button>
         </div>
         <p class="quick-add-help">Fill Names uses local parsing. Smart Fill uses the local AI server when it is running.</p>
+      </div>
+      <div class="quick-add-card">
+        <label>
+          Discord channel ID
+          <input
+            id="discordChannelId"
+            type="password"
+            inputmode="numeric"
+            autocomplete="off"
+            value="${escapeHtml(state.discordChannelId)}"
+            placeholder="Example: 123456789012345678"
+          />
+        </label>
+        <label>
+          Host Discord user ID
+          <input
+            id="discordHostUserId"
+            type="password"
+            inputmode="numeric"
+            autocomplete="off"
+            value="${escapeHtml(state.discordHostUserId)}"
+            placeholder="Example: 123456789012345678"
+          />
+        </label>
+        <div class="button-row">
+          <button id="createDiscordLobbyButton" type="button">Create Queue Lobby</button>
+          <button id="refreshDiscordLobbyButton" class="secondary-button" type="button" ${state.discordLobbyId ? '' : 'disabled'}>Refresh Queue</button>
+          <button id="useDiscordLobbyButton" class="secondary-button" type="button" ${queuedPlayers.length > 0 ? '' : 'disabled'}>Use Queue Players</button>
+          <button id="closeDiscordLobbyButton" class="danger-button" type="button" ${state.discordLobby?.status === 'open' ? '' : 'disabled'}>Close Queue</button>
+          <button id="importDiscordButton" class="secondary-button" type="button">Import Recent Posters</button>
+        </div>
+        <p class="quick-add-help">Create Queue Lobby posts Join/Leave buttons in Discord. Import Recent Posters is the older fallback.</p>
+        ${queueStatus}
       </div>
       <div class="player-name-grid">
         ${state.playerNames.map((name, index) => `
@@ -527,6 +1325,139 @@ function renderPlayerNamesStep() {
       const index = numberValue(event.target.dataset.playerIndex);
       state.playerNames[index] = event.target.value;
     });
+  });
+  document.getElementById('discordChannelId').addEventListener('input', (event) => {
+    state.discordChannelId = event.target.value;
+    saveDiscordChannelId(state.discordChannelId.trim());
+  });
+  document.getElementById('discordHostUserId').addEventListener('input', (event) => {
+    state.discordHostUserId = event.target.value;
+    saveDiscordHostUserId(state.discordHostUserId.trim());
+  });
+  document.getElementById('createDiscordLobbyButton').addEventListener('click', async () => {
+    const createButton = document.getElementById('createDiscordLobbyButton');
+    const channelId = document.getElementById('discordChannelId').value.trim();
+    const hostUserId = document.getElementById('discordHostUserId').value.trim();
+
+    state.discordChannelId = channelId;
+    state.discordHostUserId = hostUserId;
+    saveDiscordChannelId(channelId);
+    saveDiscordHostUserId(hostUserId);
+
+    if (!channelId) {
+      showInlineError('Paste a Discord channel ID before creating a queue lobby.');
+      return;
+    }
+
+    if (!hostUserId) {
+      showInlineError('Paste the host Discord user ID before creating a queue lobby.');
+      return;
+    }
+
+    try {
+      createButton.disabled = true;
+      createButton.textContent = 'Creating...';
+      const { lobby, hostToken } = await createDiscordLobby(channelId);
+
+      state.discordLobbyId = lobby.id;
+      state.discordLobby = lobby;
+      state.sharedLobbyHostToken = hostToken;
+      state.isSharedLobbyHost = true;
+      saveDiscordLobbyId(lobby.id);
+      saveSharedLobbyHostToken(lobby.id, hostToken);
+      window.history.replaceState(null, '', `?lobby=${encodeURIComponent(lobby.id)}`);
+      await publishSharedLobbyState();
+      render();
+    } catch (error) {
+      showInlineError(`Discord queue could not be created: ${error.message}`);
+    } finally {
+      const currentCreateButton = document.getElementById('createDiscordLobbyButton');
+
+      if (currentCreateButton) {
+        currentCreateButton.disabled = false;
+        currentCreateButton.textContent = 'Create Queue Lobby';
+      }
+    }
+  });
+  document.getElementById('refreshDiscordLobbyButton').addEventListener('click', async () => {
+    const refreshButton = document.getElementById('refreshDiscordLobbyButton');
+
+    if (!state.discordLobbyId) {
+      showInlineError('Create a Discord queue lobby first.');
+      return;
+    }
+
+    try {
+      refreshButton.disabled = true;
+      refreshButton.textContent = 'Refreshing...';
+      state.discordLobby = await fetchDiscordLobby(state.discordLobbyId);
+      render();
+    } catch (error) {
+      showInlineError(`Discord queue could not be refreshed: ${error.message}`);
+    } finally {
+      const currentRefreshButton = document.getElementById('refreshDiscordLobbyButton');
+
+      if (currentRefreshButton) {
+        currentRefreshButton.disabled = false;
+        currentRefreshButton.textContent = 'Refresh Queue';
+      }
+    }
+  });
+  document.getElementById('useDiscordLobbyButton').addEventListener('click', () => {
+    const queuePlayers = state.discordLobby?.players || [];
+    const nameCounts = new Map();
+    const playerDiscordIds = {};
+    const playerMeta = {};
+    const names = queuePlayers.map((player) => {
+      const baseName = player.displayName;
+      const key = baseName.toLowerCase();
+      const nextCount = (nameCounts.get(key) || 0) + 1;
+      const displayName = nextCount === 1 ? baseName : `${baseName}(${nextCount})`;
+
+      nameCounts.set(key, nextCount);
+      playerDiscordIds[displayName] = player.userId;
+      playerMeta[displayName] = {
+        userId: player.userId,
+        avatarUrl: player.avatarUrl || '',
+      };
+
+      return displayName;
+    });
+
+    if (names.length === 0) {
+      showInlineError('No players are queued yet.');
+      return;
+    }
+
+    if (applyRosterWithDuplicateReview(names)) {
+      state.playerDiscordIds = playerDiscordIds;
+      state.playerMeta = playerMeta;
+      render();
+    }
+  });
+  document.getElementById('closeDiscordLobbyButton').addEventListener('click', async () => {
+    const closeButton = document.getElementById('closeDiscordLobbyButton');
+
+    if (!state.discordLobbyId) {
+      showInlineError('Create a Discord queue lobby first.');
+      return;
+    }
+
+    try {
+      closeButton.disabled = true;
+      closeButton.textContent = 'Closing...';
+      state.discordLobby = await closeDiscordLobby(state.discordLobbyId);
+      render();
+    } catch (error) {
+      showInlineError(`Discord queue could not be closed: ${error.message}`);
+    } finally {
+      const currentCloseButton = document.getElementById('closeDiscordLobbyButton');
+
+      if (currentCloseButton) {
+        currentCloseButton.disabled = false;
+        currentCloseButton.textContent = 'Close Queue';
+      }
+    }
   });
   document.getElementById('applyQuickAddButton').addEventListener('click', () => {
     const names = applyRosterInstruction(document.getElementById('quickAddPlayers').value);
@@ -582,8 +1513,45 @@ function renderPlayerNamesStep() {
       }
     }
   });
+  document.getElementById('importDiscordButton').addEventListener('click', async () => {
+    const importButton = document.getElementById('importDiscordButton');
+    const channelId = document.getElementById('discordChannelId').value.trim();
+
+    state.discordChannelId = channelId;
+    saveDiscordChannelId(channelId);
+
+    if (!channelId) {
+      showInlineError('Paste a Discord channel ID before importing.');
+      return;
+    }
+
+    try {
+      importButton.disabled = true;
+      importButton.textContent = 'Importing...';
+      const names = await importPlayersFromDiscord(channelId);
+
+      if (names.length === 0) {
+        throw new Error('No recent Discord posters were found in that channel.');
+      }
+
+      if (applyRosterWithDuplicateReview(names)) {
+        render();
+      }
+    } catch (error) {
+      showInlineError(`Discord import failed: ${error.message}`);
+    } finally {
+      const currentImportButton = document.getElementById('importDiscordButton');
+
+      if (currentImportButton) {
+        currentImportButton.disabled = false;
+        currentImportButton.textContent = 'Import Recent Posters';
+      }
+    }
+  });
   document.getElementById('clearNamesButton').addEventListener('click', () => {
     state.playerNames = Array.from({ length: numberValue(state.totalPlayers) }, () => '');
+    state.playerDiscordIds = {};
+    state.playerMeta = {};
     render();
   });
   document.getElementById('backButton').addEventListener('click', () => {
@@ -717,7 +1685,7 @@ function renderCaptainSelectionStep() {
       <div class="captain-picker">
         ${availablePlayers.map((player) => `
           <div class="captain-player-row">
-            <span>${escapeHtml(player)}</span>
+            ${renderPlayerIdentity(player)}
             <button class="make-captain-button" type="button" data-player="${escapeHtml(player)}">Make Captain</button>
           </div>
         `).join('')}
@@ -730,7 +1698,11 @@ function renderCaptainSelectionStep() {
   });
 
   document.querySelectorAll('.make-captain-button').forEach((button) => {
-    button.addEventListener('click', () => assignCaptain(button.dataset.player));
+    button.addEventListener('click', () => {
+      assignCaptain(button.dataset.player).catch((error) => {
+        showInlineError(error.message || 'Captain draft could not be started.');
+      });
+    });
   });
   document.getElementById('backButton').addEventListener('click', () => {
     state.captains = [];
@@ -743,7 +1715,7 @@ function renderCaptainSelectionStep() {
   });
 }
 
-function assignCaptain(player) {
+async function assignCaptain(player) {
   const nextCaptainIndex = state.captains.findIndex((captain) => !captain);
 
   if (nextCaptainIndex === -1) {
@@ -754,7 +1726,19 @@ function assignCaptain(player) {
 
   if (state.captains.every(Boolean)) {
     buildManualTeamsWithCaptains();
+    const missingDiscordCaptain = state.teams.find((team) => !team.captainUserId);
+
+    if (missingDiscordCaptain) {
+      state.captains[nextCaptainIndex] = '';
+      state.teams = [];
+      state.unassignedPlayers = [];
+      throw new Error(`${missingDiscordCaptain.captain} needs to come from the Discord queue before locked drafting can start.`);
+    }
+
+    const draft = await createServerDraft();
+    syncServerDraftToState(draft);
     state.step = 6;
+    await syncSharedLobbyDraft(draft);
   }
 
   render();
@@ -762,13 +1746,18 @@ function assignCaptain(player) {
 
 function renderTeamsStep() {
   const imbalance = getTeamImbalance();
+  const draftActive = isCaptainDraftActive();
+  const draftComplete = state.sortMode === 'manual' && state.useCaptains && !draftActive && isDraftComplete();
   wizard.innerHTML = `
     <section class="step-card">
+      ${renderSharedLobbyBanner()}
       <div>
-        <h2 class="step-title">Teams are sorted</h2>
-        <p class="step-copy">Reroll if the random sort feels unbalanced, or manually move a player below.</p>
+        <h2 class="step-title">${draftActive ? 'Captain Draft' : 'Teams are sorted'}</h2>
+        <p class="step-copy">${draftActive ? 'Captains draft one player at a time. Each turn lasts 90 seconds.' : 'Reroll if the random sort feels unbalanced, or manually move a player below.'}</p>
       </div>
       ${imbalance > 1 ? '<div class="message warning">These teams are uneven. You can reroll or manually move players.</div>' : ''}
+      ${draftActive ? renderDraftStatus() : ''}
+      ${draftComplete ? '<div class="message success">Draft complete. All available players have been drafted or every team is full.</div>' : ''}
       <div class="button-row">
         ${state.sortMode === 'random' ? '<button id="rerollButton" type="button">Reroll Teams</button>' : ''}
         <button id="sortChoiceButton" class="secondary-button" type="button">Back to Sort Choice</button>
@@ -791,10 +1780,12 @@ function renderTeamsStep() {
     });
   }
   document.getElementById('setupButton').addEventListener('click', () => {
+    resetDraftState();
     state.step = 1;
     render();
   });
   document.getElementById('sortChoiceButton').addEventListener('click', () => {
+    resetDraftState();
     state.step = 5;
     render();
   });
@@ -815,6 +1806,13 @@ function renderTeamsStep() {
   });
   document.querySelectorAll('.assign-player-button').forEach((button) => {
     button.addEventListener('click', () => {
+      if (isCaptainDraftActive()) {
+        draftPlayerToActiveTeam(button.dataset.player).catch((error) => {
+          showInlineError(error.message || 'Draft pick failed.');
+        });
+        return;
+      }
+
       state.assignmentPlayer = button.dataset.player;
       render();
     });
@@ -857,11 +1855,62 @@ function renderTeamsStep() {
     confirmSwapButton.addEventListener('click', confirmSwap);
     bindEnterToButton('confirmSwapButton');
   }
+  const discordLogoutButton = document.getElementById('discordLogoutButton');
+
+  if (discordLogoutButton) {
+    discordLogoutButton.addEventListener('click', logoutDiscord);
+  }
 }
 
 function getTeamImbalance() {
   const sizes = state.teams.map((team) => team.players.length);
   return Math.max(...sizes) - Math.min(...sizes);
+}
+
+function renderDraftStatus() {
+  const activeTeam = state.teams[state.draft.currentTeamIndex];
+  const userLabel = state.sessionUser
+    ? `Signed in as ${state.sessionUser.globalName || state.sessionUser.username}`
+    : 'Captains must sign in to pick';
+  const draftLink = state.serverDraftId ? `${window.location.origin}${window.location.pathname}?draft=${state.serverDraftId}` : '';
+
+  if (!activeTeam) {
+    return '';
+  }
+
+  return `
+    <div class="auth-strip">
+      <span>${escapeHtml(userLabel)}</span>
+      <div class="button-row">
+        ${state.sessionUser ? '<button id="discordLogoutButton" class="secondary-button" type="button">Sign Out</button>' : `<a class="button-link secondary-button" href="${DISCORD_AUTH_URL}">Sign In with Discord</a>`}
+      </div>
+    </div>
+    <section class="draft-status">
+      <div>
+        <span>On the clock</span>
+        <strong>${escapeHtml(activeTeam.captain || activeTeam.name)}</strong>
+      </div>
+      <div>
+        <span>Time left</span>
+        <strong id="draftTimerValue">${formatDraftTime(getDraftSecondsRemaining())}</strong>
+      </div>
+      <div>
+        <span>Drafting for</span>
+        <strong>${escapeHtml(activeTeam.name)}</strong>
+      </div>
+    </section>
+    ${draftLink ? `<div class="message"><strong>Draft link:</strong> ${escapeHtml(draftLink)}</div>` : ''}
+  `;
+}
+
+function canCurrentUserDraft() {
+  if (!isCaptainDraftActive() || !state.sessionUser) {
+    return false;
+  }
+
+  const activeTeam = state.teams[state.draft.currentTeamIndex];
+
+  return Boolean(activeTeam && activeTeam.captainUserId === state.sessionUser.id);
 }
 
 function renderMovePanel() {
@@ -890,20 +1939,23 @@ function renderMovePanel() {
 }
 
 function renderUnassignedPool() {
+  const draftActive = isCaptainDraftActive();
+  const activeTeam = state.teams[state.draft.currentTeamIndex];
+  const draftAllowed = canCurrentUserDraft();
   return `
     <section class="unassigned-card">
       <div class="unassigned-header">
         <div>
           <h2>Unassigned Players</h2>
-          <p>Draft players from here into teams. Full teams cannot receive more players.</p>
+          <p>${draftActive ? `${activeTeam?.captain || activeTeam?.name || 'Captain'} is choosing now.` : 'Draft players from here into teams. Full teams cannot receive more players.'}</p>
         </div>
         <span class="team-size">${state.unassignedPlayers.length} remaining</span>
       </div>
       <ul class="unassigned-list">
         ${state.unassignedPlayers.length === 0 ? '<li class="empty-slot">All players are assigned.</li>' : state.unassignedPlayers.map((player) => `
           <li class="player-row">
-            <span>${escapeHtml(player)}</span>
-            <button class="assign-player-button secondary-button" type="button" data-player="${escapeHtml(player)}">Assign</button>
+            ${renderPlayerIdentity(player)}
+            <button class="assign-player-button secondary-button" type="button" data-player="${escapeHtml(player)}" ${draftActive && !draftAllowed ? 'disabled' : ''}>${draftActive ? 'Draft' : 'Assign'}</button>
           </li>
         `).join('')}
       </ul>
@@ -914,9 +1966,12 @@ function renderUnassignedPool() {
 function renderTeamCard(team) {
   const missingSlots = Math.max(numberValue(state.playersPerTeam) - team.players.length, 0);
   const emptySlots = Array.from({ length: missingSlots }, () => '<li class="empty-slot">Empty slot</li>').join('');
+  const draftActive = isCaptainDraftActive();
+  const canManuallyEditPlayers = state.sortMode === 'manual' && !state.useCaptains;
+  const isActiveDraftTeam = draftActive && state.teams[state.draft.currentTeamIndex]?.id === team.id;
 
   return `
-    <article class="team-card">
+    <article class="team-card ${isActiveDraftTeam ? 'draft-active-team' : ''}">
       <div class="team-header">
         <label class="team-name-label">
           <span>Team name</span>
@@ -933,10 +1988,10 @@ function renderTeamCard(team) {
       <ul class="team-list">
         ${team.players.map((player) => `
           <li class="player-row">
-            <span>${team.captain === player ? '<span class="captain-crown" title="Team captain">♛</span>' : ''}${escapeHtml(player)}</span>
+            ${renderPlayerIdentity(player, { captain: team.captain === player })}
             <div class="player-actions">
-              ${state.sortMode === 'manual' && team.captain !== player ? `<button class="swap-player-button secondary-button" type="button" data-team-id="${team.id}" data-player="${escapeHtml(player)}">Swap</button>` : ''}
-              ${state.sortMode === 'manual' && team.captain !== player ? `<button class="unassign-player-button danger-button" type="button" data-team-id="${team.id}" data-player="${escapeHtml(player)}">Unassign</button>` : ''}
+              ${canManuallyEditPlayers && team.captain !== player ? `<button class="swap-player-button secondary-button" type="button" data-team-id="${team.id}" data-player="${escapeHtml(player)}">Swap</button>` : ''}
+              ${canManuallyEditPlayers && team.captain !== player ? `<button class="unassign-player-button danger-button" type="button" data-team-id="${team.id}" data-player="${escapeHtml(player)}">Unassign</button>` : ''}
             </div>
           </li>
         `).join('')}
@@ -969,6 +2024,38 @@ function renderAssignmentModal() {
       </section>
     </div>
   `;
+}
+
+async function draftPlayerToActiveTeam(player) {
+  if (!isCaptainDraftActive()) {
+    return;
+  }
+
+  if (state.serverDraftId) {
+    const draft = await submitServerDraftPick(player);
+    syncServerDraftToState(draft);
+    await syncSharedLobbyDraft(draft);
+    render();
+    return;
+  }
+
+  const activeTeam = state.teams[state.draft.currentTeamIndex];
+
+  if (!activeTeam || isTeamFull(activeTeam) || !state.unassignedPlayers.includes(player)) {
+    return;
+  }
+
+  activeTeam.players.push(player);
+  state.unassignedPlayers = state.unassignedPlayers.filter((name) => name !== player);
+
+  if (isDraftComplete()) {
+    state.draft.active = false;
+    stopDraftTimer();
+  } else {
+    advanceDraftTurn();
+  }
+
+  render();
 }
 
 function renderSwapModal() {
@@ -1084,6 +2171,7 @@ function moveSelectedPlayer() {
 }
 
 resetButton.addEventListener('click', () => {
+  resetDraftState();
   state.step = 1;
   state.totalPlayers = '';
   state.playersPerTeam = '';
@@ -1097,6 +2185,10 @@ resetButton.addEventListener('click', () => {
   state.assignmentPlayer = null;
   state.swapSource = null;
   state.warningAccepted = false;
+  state.playerDiscordIds = {};
+  state.serverDraftId = '';
+  state.serverDraft = null;
+  saveServerDraftId('');
   render();
 });
 
@@ -1107,5 +2199,58 @@ themeToggleButton.addEventListener('click', () => {
   saveTheme(nextTheme);
 });
 
-initializeTheme();
-render();
+async function initializeApp() {
+  initializeTheme();
+  initializeSavedSettings();
+
+  try {
+    const config = await fetchConfig();
+    state.publicBaseUrl = config.publicBaseUrl || '';
+  } catch {
+    state.publicBaseUrl = '';
+  }
+
+  try {
+    state.sessionUser = await fetchSession();
+  } catch {
+    state.sessionUser = null;
+  }
+
+  if (state.discordLobbyId) {
+    try {
+      const lobby = await fetchDiscordLobby(state.discordLobbyId);
+
+      if (lobby.appState) {
+        applyShareableAppState(lobby.appState);
+      }
+
+      state.discordLobby = {
+        ...lobby,
+        appState: null,
+      };
+
+      if (!state.isSharedLobbyHost) {
+        startSharedLobbyPolling();
+      }
+    } catch {
+      state.discordLobbyId = '';
+      state.sharedLobbyHostToken = '';
+      state.isSharedLobbyHost = false;
+    }
+  }
+
+  if (state.serverDraftId) {
+    try {
+      const draft = await fetchServerDraft(state.serverDraftId);
+      syncServerDraftToState(draft);
+    } catch {
+      saveServerDraftId('');
+      state.serverDraftId = '';
+      state.serverDraft = null;
+    }
+  }
+
+  render();
+}
+
+initializeApp();

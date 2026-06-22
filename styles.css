@@ -92,6 +92,18 @@ button {
   font-weight: 800;
 }
 
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--button-text);
+  background: var(--primary);
+  font-weight: 800;
+  text-decoration: none;
+}
+
 button:hover:not(:disabled) {
   background: var(--primary-dark);
 }
@@ -103,6 +115,11 @@ button:disabled {
 
 .ghost-button,
 .secondary-button {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.button-link.secondary-button {
   color: var(--primary);
   background: var(--primary-soft);
 }
@@ -233,6 +250,40 @@ body.dark-theme .theme-toggle-thumb {
   line-height: 1.5;
 }
 
+.shared-lobby-banner {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--primary-soft);
+}
+
+.shared-lobby-banner span {
+  color: var(--primary);
+  font-weight: 900;
+}
+
+.shared-lobby-banner code {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shared-lobby-banner small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.shared-lobby-banner .button-link {
+  justify-self: start;
+}
+
+.shared-lobby-banner button {
+  justify-self: start;
+}
+
 .field-grid {
   display: grid;
   gap: 12px;
@@ -299,6 +350,34 @@ select:focus {
   line-height: 1.4;
 }
 
+.discord-queue-status {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--field);
+}
+
+.discord-queue-status div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.discord-queue-status span,
+.discord-queue-status p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.discord-queue-status ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 22px;
+}
+
 .player-name-field {
   padding: 12px;
   border: 1px solid var(--border);
@@ -350,18 +429,50 @@ select:focus {
 
 .captain-player-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr;
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--section);
 }
 
-.captain-player-row span {
-  overflow-wrap: anywhere;
+.captain-player-row .player-identity {
+  width: 100%;
+}
+
+.captain-player-row .player-identity span:last-child,
+.player-row .player-identity span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.captain-player-row button {
+  width: 100%;
+}
+
+.player-identity {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
   font-weight: 800;
+}
+
+.player-avatar {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  object-fit: cover;
+}
+
+.player-avatar-fallback {
+  border: 1px solid var(--border);
 }
 
 .message {
@@ -419,11 +530,55 @@ select:focus {
   margin-top: 18px;
 }
 
+.auth-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--section);
+}
+
+.auth-strip span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.draft-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--captain-border);
+  border-radius: 8px;
+  background: var(--captain-bg);
+}
+
+.draft-status span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.draft-status strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 22px;
+}
+
 .team-card {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
   background: var(--section);
+}
+
+.team-card.draft-active-team {
+  border-color: var(--captain-border);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .unassigned-card {
@@ -515,7 +670,7 @@ select:focus {
   background: var(--soft);
 }
 
-.player-row span {
+.player-row > span {
   overflow-wrap: anywhere;
 }
 
@@ -616,6 +771,7 @@ select:focus {
 
 @media (max-width: 760px) {
   .summary-grid,
+  .draft-status,
   .move-panel {
     grid-template-columns: 1fr;
   }

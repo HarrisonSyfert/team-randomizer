@@ -1,3 +1,6 @@
 node_modules/
 .env
 npm-debug.log*
+data/lobbies.json
+data/drafts.json
+data/sessions.json
