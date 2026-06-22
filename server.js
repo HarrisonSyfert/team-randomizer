@@ -342,10 +342,43 @@ function startServerDraftTurn(draft, teamIndex, now = Date.now()) {
   return draft;
 }
 
+function pickRandomUnassignedPlayer(draft) {
+  if (!draft.unassignedPlayers.length) {
+    return '';
+  }
+
+  const randomIndex = Math.floor(Math.random() * draft.unassignedPlayers.length);
+  const [player] = draft.unassignedPlayers.splice(randomIndex, 1);
+
+  return player;
+}
+
+function autoDraftForExpiredTurn(draft) {
+  const activeTeam = draft.teams[draft.currentTeamIndex];
+
+  if (!activeTeam || isDraftTeamFull(draft, activeTeam) || !draft.unassignedPlayers.length) {
+    return;
+  }
+
+  const player = pickRandomUnassignedPlayer(draft);
+
+  if (player) {
+    activeTeam.players.push(player);
+  }
+}
+
 function advanceExpiredDraftTurns(draft) {
   const now = Date.now();
 
   while (draft.status === 'active' && draft.turnEndsAt && Date.parse(draft.turnEndsAt) <= now) {
+    autoDraftForExpiredTurn(draft);
+
+    if (isServerDraftComplete(draft)) {
+      draft.status = 'complete';
+      draft.turnEndsAt = null;
+      break;
+    }
+
     const nextIndex = getNextServerDraftTeamIndex(draft, draft.currentTeamIndex);
     startServerDraftTurn(draft, nextIndex, now);
   }

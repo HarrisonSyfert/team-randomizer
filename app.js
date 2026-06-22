@@ -1002,8 +1002,9 @@ function handleDraftTimerTick() {
   if (getDraftSecondsRemaining() <= 0) {
     if (state.serverDraftId) {
       fetchServerDraft(state.serverDraftId)
-        .then((draft) => {
+        .then(async (draft) => {
           syncServerDraftToState(draft);
+          await syncSharedLobbyDraft(draft);
           render();
         })
         .catch(() => {});
