@@ -1716,10 +1716,11 @@ function renderCaptainSelectionStep() {
   const selectedCaptains = new Set(state.captains.filter(Boolean));
   const nextTeamNumber = state.captains.findIndex((captain) => !captain) + 1;
   const availablePlayers = state.playerNames.filter((player) => !selectedCaptains.has(player));
+  const captainsComplete = state.captains.length > 0 && state.captains.every(Boolean);
 
   renderStepShell({
     title: 'Pick team captains',
-    copy: 'Click a player to make them the captain for the next team. Once every team has a captain, the draft board opens.',
+    copy: 'Click a player to make them the captain for the next team. Once every team has a captain, start the draft.',
     body: `
       <div class="captain-progress">
         ${state.captains.map((captain, index) => `
@@ -1730,6 +1731,7 @@ function renderCaptainSelectionStep() {
         `).join('')}
       </div>
       ${nextTeamNumber > 0 ? `<div class="message">Selecting captain for Team ${nextTeamNumber}</div>` : ''}
+      ${captainsComplete ? '<div class="message success">All captains are selected. Start the draft when ready.</div>' : ''}
       <div class="captain-picker">
         ${availablePlayers.map((player) => `
           <div class="captain-player-row">
@@ -1742,6 +1744,7 @@ function renderCaptainSelectionStep() {
     actions: `
       <button id="backButton" class="secondary-button" type="button">Back</button>
       <button id="clearCaptainsButton" class="secondary-button" type="button">Clear Captains</button>
+      ${captainsComplete ? '<button id="startDraftButton" type="button">Start Draft</button>' : ''}
     `,
   });
 
@@ -1761,9 +1764,18 @@ function renderCaptainSelectionStep() {
     state.captains = Array.from({ length: numberValue(state.teamCount) }, () => '');
     render();
   });
+  const startDraftButton = document.getElementById('startDraftButton');
+
+  if (startDraftButton) {
+    startDraftButton.addEventListener('click', () => {
+      startLockedCaptainDraft().catch((error) => {
+        showInlineError(error.message || 'Captain draft could not be started.');
+      });
+    });
+  }
 }
 
-async function assignCaptain(player) {
+function assignCaptain(player) {
   const nextCaptainIndex = state.captains.findIndex((captain) => !captain);
 
   if (nextCaptainIndex === -1) {
@@ -1771,24 +1783,29 @@ async function assignCaptain(player) {
   }
 
   state.captains[nextCaptainIndex] = player;
+  render();
+}
 
-  if (state.captains.every(Boolean)) {
-    buildManualTeamsWithCaptains();
-    const missingDiscordCaptain = state.teams.find((team) => !team.captainUserId);
-
-    if (missingDiscordCaptain) {
-      state.captains[nextCaptainIndex] = '';
-      state.teams = [];
-      state.unassignedPlayers = [];
-      throw new Error(`${missingDiscordCaptain.captain} needs to come from the Discord queue before locked drafting can start.`);
-    }
-
-    const draft = await createServerDraft();
-    syncServerDraftToState(draft);
-    state.step = 6;
-    await syncSharedLobbyDraft(draft);
+async function startLockedCaptainDraft() {
+  if (!state.captains.every(Boolean)) {
+    showInlineError('Pick every captain before starting the draft.');
+    return;
   }
 
+  buildManualTeamsWithCaptains();
+  const missingDiscordCaptain = state.teams.find((team) => !team.captainUserId);
+
+  if (missingDiscordCaptain) {
+    state.teams = [];
+    state.unassignedPlayers = [];
+    throw new Error(`${missingDiscordCaptain.captain} needs to come from the Discord queue before locked drafting can start.`);
+  }
+
+  const draft = await createServerDraft();
+
+  syncServerDraftToState(draft);
+  state.step = 6;
+  await syncSharedLobbyDraft(draft);
   render();
 }
 
