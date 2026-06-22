@@ -527,7 +527,8 @@ function publicLobby(lobby) {
 function buildLobbyMessage(lobby) {
   const playerCount = lobby.players.length;
   const hostMention = lobby.hostUserId ? `<@${lobby.hostUserId}>` : 'The host';
-  const appJoinUrl = `${getPublicBaseUrl()}/?lobby=${lobby.id}`;
+  const draftId = lobby.appState?.serverDraftId || '';
+  const appJoinUrl = getLobbyJoinUrl(lobby.id, draftId);
   const roster = lobby.players
     .map((player, index) => `${index + 1}. ${player.displayName}`)
     .join('\n');
@@ -581,8 +582,16 @@ function getAppHomeUrl() {
   return getPublicBaseUrl();
 }
 
-function getLobbyJoinUrl(lobbyId) {
-  return `${getPublicBaseUrl()}/?lobby=${lobbyId}`;
+function getLobbyJoinUrl(lobbyId, draftId = '') {
+  const url = new URL(getPublicBaseUrl());
+
+  url.searchParams.set('lobby', lobbyId);
+
+  if (draftId) {
+    url.searchParams.set('draft', draftId);
+  }
+
+  return url.toString();
 }
 
 function buildTeamPromptMessage() {
@@ -1116,8 +1125,8 @@ app.patch('/api/discord-lobbies/:lobbyId/state', (req, res) => {
   return res.json({ lobby: publicLobby(lobby) });
 });
 
-app.post('/api/discord-lobbies/:lobbyId/sync-draft', (req, res) => {
-  const { draftId } = req.body;
+app.post('/api/discord-lobbies/:lobbyId/sync-draft', async (req, res) => {
+  const { draftId, hostToken } = req.body;
   const draft = updateDraft(draftId, (currentDraft) => currentDraft);
 
   if (!draft) {
@@ -1125,12 +1134,14 @@ app.post('/api/discord-lobbies/:lobbyId/sync-draft', (req, res) => {
   }
 
   const publicDraftState = publicDraft(draft);
+  let isHostSync = false;
   const lobby = updateLobby(req.params.lobbyId, (currentLobby) => {
-    const currentAppState = currentLobby.appState || {};
-
-    if (currentAppState.serverDraftId && currentAppState.serverDraftId !== draftId) {
+    if (!currentLobby.hostToken || currentLobby.hostToken !== hostToken) {
       return currentLobby;
     }
+
+    isHostSync = true;
+    const currentAppState = currentLobby.appState || {};
 
     return {
       ...currentLobby,
@@ -1158,6 +1169,16 @@ app.post('/api/discord-lobbies/:lobbyId/sync-draft', (req, res) => {
 
   if (!lobby) {
     return res.status(404).json({ error: 'Discord queue lobby was not found.' });
+  }
+
+  if (!isHostSync) {
+    return res.status(403).json({ error: 'Only the host can sync this draft.' });
+  }
+
+  try {
+    await updateDiscordLobbyMessage(lobby);
+  } catch (error) {
+    console.error('Discord lobby message update failed:', error.message);
   }
 
   return res.json({ lobby: publicLobby(lobby), draft: publicDraftState });

@@ -219,10 +219,23 @@ function getShareLobbyIdFromUrl() {
   return new URLSearchParams(window.location.search).get('lobby') || '';
 }
 
-function getSharedLobbyUrl(lobbyId) {
+function getSharedLobbyUrl(lobbyId, draftId = state.serverDraftId || state.serverDraft?.id || '') {
   const baseUrl = state.publicBaseUrl || window.location.origin;
+  const params = new URLSearchParams({ lobby: lobbyId });
 
-  return `${baseUrl}${window.location.pathname}?lobby=${lobbyId}`;
+  if (draftId) {
+    params.set('draft', draftId);
+  }
+
+  return `${baseUrl}${window.location.pathname}?${params.toString()}`;
+}
+
+function updateBrowserSharedLobbyUrl(draftId = state.serverDraftId || state.serverDraft?.id || '') {
+  if (!state.discordLobbyId) {
+    return;
+  }
+
+  window.history.replaceState(null, '', getSharedLobbyUrl(state.discordLobbyId, draftId));
 }
 
 function isSharedLobbyViewer() {
@@ -325,6 +338,10 @@ function applyShareableAppState(appState) {
     draft: appState.draft || state.draft,
   });
   isApplyingSharedLobbyState = false;
+
+  if (appState.serverDraftId) {
+    updateBrowserSharedLobbyUrl(appState.serverDraftId);
+  }
 }
 
 function getPlayerMeta(name) {
@@ -767,7 +784,10 @@ async function syncSharedLobbyDraft(draft) {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ draftId: draft.id }),
+    body: JSON.stringify({
+      draftId: draft.id,
+      hostToken: state.sharedLobbyHostToken,
+    }),
   });
   const data = await response.json().catch(() => ({}));
 
@@ -776,6 +796,7 @@ async function syncSharedLobbyDraft(draft) {
       ...data.lobby,
       appState: null,
     };
+    updateBrowserSharedLobbyUrl(draft.id);
   }
 }
 
