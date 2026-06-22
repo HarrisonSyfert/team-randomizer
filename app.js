@@ -342,6 +342,15 @@ function renderPlayerIdentity(name, options = {}) {
   `;
 }
 
+function renderEyeIcon() {
+  return `
+    <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  `;
+}
+
 function applyTheme(theme) {
   const isDarkTheme = theme === 'dark';
 
@@ -1267,25 +1276,35 @@ function renderPlayerNamesStep() {
       <div class="quick-add-card">
         <label>
           Discord channel ID
-          <input
-            id="discordChannelId"
-            type="password"
-            inputmode="numeric"
-            autocomplete="off"
-            value="${escapeHtml(state.discordChannelId)}"
-            placeholder="Example: 123456789012345678"
-          />
+          <span class="masked-input-row">
+            <input
+              id="discordChannelId"
+              type="password"
+              inputmode="numeric"
+              autocomplete="off"
+              value="${escapeHtml(state.discordChannelId)}"
+              placeholder="Example: 123456789012345678"
+            />
+            <button class="icon-button toggle-sensitive-button" type="button" data-target-input="discordChannelId" aria-label="Show Discord channel ID">
+              ${renderEyeIcon()}
+            </button>
+          </span>
         </label>
         <label>
           Host Discord user ID
-          <input
-            id="discordHostUserId"
-            type="password"
-            inputmode="numeric"
-            autocomplete="off"
-            value="${escapeHtml(state.discordHostUserId)}"
-            placeholder="Example: 123456789012345678"
-          />
+          <span class="masked-input-row">
+            <input
+              id="discordHostUserId"
+              type="password"
+              inputmode="numeric"
+              autocomplete="off"
+              value="${escapeHtml(state.discordHostUserId)}"
+              placeholder="Example: 123456789012345678"
+            />
+            <button class="icon-button toggle-sensitive-button" type="button" data-target-input="discordHostUserId" aria-label="Show host Discord user ID">
+              ${renderEyeIcon()}
+            </button>
+          </span>
         </label>
         <div class="button-row">
           <button id="createDiscordLobbyButton" type="button">Create Queue Lobby</button>
@@ -1324,6 +1343,15 @@ function renderPlayerNamesStep() {
     input.addEventListener('input', (event) => {
       const index = numberValue(event.target.dataset.playerIndex);
       state.playerNames[index] = event.target.value;
+    });
+  });
+  document.querySelectorAll('.toggle-sensitive-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      const input = document.getElementById(button.dataset.targetInput);
+      const isHidden = input.type === 'password';
+
+      input.type = isHidden ? 'text' : 'password';
+      button.setAttribute('aria-label', `${isHidden ? 'Hide' : 'Show'} ${input.id === 'discordChannelId' ? 'Discord channel ID' : 'host Discord user ID'}`);
     });
   });
   document.getElementById('discordChannelId').addEventListener('input', (event) => {

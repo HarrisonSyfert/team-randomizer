@@ -92,6 +92,25 @@ button {
   font-weight: 800;
 }
 
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  min-width: 42px;
+  padding: 0;
+}
+
+.field-icon {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
 .button-link {
   display: inline-flex;
   align-items: center;
@@ -287,6 +306,13 @@ body.dark-theme .theme-toggle-thumb {
 .field-grid {
   display: grid;
   gap: 12px;
+}
+
+.masked-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
 }
 
 label {
