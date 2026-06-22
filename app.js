@@ -229,6 +229,10 @@ function isSharedLobbyViewer() {
   return Boolean(state.discordLobbyId && !state.isSharedLobbyHost);
 }
 
+function hasHostOverrideAccess() {
+  return Boolean(state.discordLobbyId && state.sharedLobbyHostToken);
+}
+
 function renderSharedLobbyBanner() {
   if (!state.discordLobbyId) {
     return '';
@@ -736,7 +740,8 @@ async function submitServerDraftPick(player) {
     },
     body: JSON.stringify({
       player,
-      hostToken: state.isSharedLobbyHost ? state.sharedLobbyHostToken : '',
+      lobbyId: state.discordLobbyId,
+      hostToken: hasHostOverrideAccess() ? state.sharedLobbyHostToken : '',
     }),
   });
   const data = await response.json().catch(() => ({}));
@@ -1982,7 +1987,7 @@ function canCurrentUserDraft() {
     return false;
   }
 
-  if (state.isSharedLobbyHost) {
+  if (hasHostOverrideAccess()) {
     return true;
   }
 

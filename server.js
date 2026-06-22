@@ -1251,6 +1251,7 @@ app.get('/api/drafts/:draftId', (req, res) => {
 app.post('/api/drafts/:draftId/pick', (req, res) => {
   const user = getSessionUser(req);
   const player = String(req.body.player || '').trim();
+  const lobbyId = String(req.body.lobbyId || '').trim();
   const hostToken = String(req.body.hostToken || '');
 
   if (!player) {
@@ -1265,7 +1266,14 @@ app.post('/api/drafts/:draftId/pick', (req, res) => {
     }
 
     const activeTeam = currentDraft.teams[currentDraft.currentTeamIndex];
-    const isHostOverride = Boolean(currentDraft.hostToken && currentDraft.hostToken === hostToken);
+    const overrideLobby = findLobby(lobbyId || currentDraft.lobbyId || '');
+    const isHostOverride = Boolean(
+      hostToken
+      && (
+        (currentDraft.hostToken && currentDraft.hostToken === hostToken)
+        || (overrideLobby?.hostToken && overrideLobby.hostToken === hostToken)
+      )
+    );
 
     if (!activeTeam) {
       rejectedError = 'No captain is currently on the clock.';
