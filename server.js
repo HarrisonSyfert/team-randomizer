@@ -17,12 +17,14 @@ const SESSION_STORE_PATH = path.join(__dirname, 'data', 'sessions.json');
 const DISCORD_BUTTON_PREFIX = 'trq';
 const DRAFT_TURN_SECONDS = 90;
 const SESSION_COOKIE_NAME = 'team_randomizer_session';
+const DISCORD_GATEWAY_INTENTS = 512;
 const oauthStates = new Set();
 const discordGatewayState = {
   socket: null,
   heartbeatTimer: null,
   reconnectTimer: null,
   lastSequence: null,
+  botUserId: null,
 };
 
 app.use(cors());
@@ -542,6 +544,65 @@ function buildLobbyMessage(lobby) {
   };
 }
 
+function getAppHomeUrl() {
+  return getPublicBaseUrl();
+}
+
+function getLobbyJoinUrl(lobbyId) {
+  return `${getPublicBaseUrl()}/?lobby=${lobbyId}`;
+}
+
+function buildTeamPromptMessage() {
+  return {
+    content: 'Want to start a Team Randomizer lobby or jump into one created recently?',
+    allowed_mentions: { parse: [] },
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 2,
+            style: 5,
+            label: 'Create Team',
+            url: getAppHomeUrl(),
+          },
+          {
+            type: 2,
+            style: 2,
+            label: 'Recent Lobbies',
+            custom_id: `${DISCORD_BUTTON_PREFIX}:recent`,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function getRecentLobbies(minutes = 30) {
+  const cutoff = Date.now() - (minutes * 60 * 1000);
+  const store = readLobbyStore();
+
+  return store.lobbies
+    .filter((lobby) => Date.parse(lobby.createdAt || 0) >= cutoff)
+    .sort((left, right) => Date.parse(right.createdAt || 0) - Date.parse(left.createdAt || 0))
+    .slice(0, 5)
+    .map(normalizeLobby);
+}
+
+function formatRecentLobbyList(lobbies) {
+  if (!lobbies.length) {
+    return `No lobbies were created in the last 30 minutes.\nCreate one here: ${getAppHomeUrl()}`;
+  }
+
+  return [
+    'Lobbies created in the last 30 minutes:',
+    ...lobbies.map((lobby, index) => {
+      const playerCount = lobby.players.length;
+      return `${index + 1}. ${playerCount}/${lobby.totalPlayers} queued - ${getLobbyJoinUrl(lobby.id)}`;
+    }),
+  ].join('\n');
+}
+
 async function discordRequest(pathname, options = {}) {
   const response = await fetch(`${DISCORD_API_BASE_URL}${pathname}`, {
     ...options,
@@ -593,6 +654,17 @@ async function respondToDiscordInteraction(interaction, content) {
       },
     }),
   });
+}
+
+async function handleRecentLobbyInteraction(interaction) {
+  const customId = interaction.data?.custom_id || '';
+
+  if (customId !== `${DISCORD_BUTTON_PREFIX}:recent`) {
+    return false;
+  }
+
+  await respondToDiscordInteraction(interaction, formatRecentLobbyList(getRecentLobbies(30)));
+  return true;
 }
 
 async function handleQueueInteraction(interaction) {
@@ -666,6 +738,31 @@ async function handleQueueInteraction(interaction) {
   }
 }
 
+async function handleBotMention(message) {
+  if (!discordGatewayState.botUserId || message.author?.bot) {
+    return;
+  }
+
+  const mentionedBot = message.mentions?.some((user) => user.id === discordGatewayState.botUserId);
+
+  if (!mentionedBot) {
+    return;
+  }
+
+  await discordRequest(`/channels/${message.channel_id}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...buildTeamPromptMessage(),
+      message_reference: {
+        message_id: message.id,
+        channel_id: message.channel_id,
+        guild_id: message.guild_id,
+        fail_if_not_exists: false,
+      },
+    }),
+  });
+}
+
 function scheduleDiscordReconnect() {
   if (discordGatewayState.reconnectTimer || !process.env.DISCORD_BOT_TOKEN) {
     return;
@@ -717,7 +814,7 @@ async function connectDiscordGateway() {
         op: 2,
         d: {
           token: process.env.DISCORD_BOT_TOKEN,
-          intents: 0,
+          intents: DISCORD_GATEWAY_INTENTS,
           properties: {
             os: process.platform,
             browser: 'team-randomizer',
@@ -728,8 +825,24 @@ async function connectDiscordGateway() {
     }
 
     if (payload.op === 0 && payload.t === 'INTERACTION_CREATE') {
-      handleQueueInteraction(payload.d).catch((error) => {
-        console.error('Discord queue interaction failed:', error.message);
+      handleRecentLobbyInteraction(payload.d).then((handled) => {
+        if (!handled) {
+          return handleQueueInteraction(payload.d);
+        }
+
+        return null;
+      }).catch((error) => {
+        console.error('Discord interaction failed:', error.message);
+      });
+    }
+
+    if (payload.op === 0 && payload.t === 'READY') {
+      discordGatewayState.botUserId = payload.d.user?.id || null;
+    }
+
+    if (payload.op === 0 && payload.t === 'MESSAGE_CREATE') {
+      handleBotMention(payload.d).catch((error) => {
+        console.error('Discord mention response failed:', error.message);
       });
     }
 

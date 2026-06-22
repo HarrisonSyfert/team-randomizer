@@ -54,8 +54,8 @@ receive Join and Leave button clicks.
 3. Add the app client ID and client secret to `.env` for Discord sign-in.
 4. In the Discord Developer Portal, add this OAuth redirect URL:
    `http://localhost:5050/auth/discord/callback`.
-5. Invite the bot to your server and give it View Channel and Read Message
-   History access in the target text channel.
+5. Invite the bot to your server and give it View Channel, Read Message
+   History, and Send Messages access in the target text channel.
 6. In Discord, enable Developer Mode, right-click the text channel, and copy the
    channel ID.
 7. Right-click the host user and copy their user ID.
@@ -68,3 +68,6 @@ click the button, the queue is saved locally, and the host can refresh the queue
 and use those players as the roster. The queue message mentions the host user ID
 entered in the app. Locked captain drafts require captains to sign in with
 Discord before they can submit picks.
+
+Mention the bot in Discord to get Create Team and Recent Lobbies buttons. Recent
+Lobbies returns lobbies created in the last 30 minutes.
