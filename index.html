@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Team Randomizer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="app-panel">
+        <header class="app-header">
+          <div>
+            <p class="eyebrow">Team Randomizer</p>
+            <h1>Build Balanced Teams</h1>
+          </div>
+          <div class="header-actions">
+            <button id="themeToggleButton" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+              <span class="theme-toggle-track">
+                <span id="themeToggleIcon" class="theme-toggle-thumb" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button id="resetButton" class="ghost-button" type="button">Reset</button>
+          </div>
+        </header>
+
+        <div id="wizard"></div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
