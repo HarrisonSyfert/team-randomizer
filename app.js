@@ -646,11 +646,12 @@ function startSharedLobbyPolling() {
         ...lobby,
         appState: null,
       };
+      await refreshAuthoritativeDraftState();
       render();
     } catch {
       stopSharedLobbyPolling();
     }
-  }, 2000);
+  }, 1000);
 }
 
 function stopSharedLobbyPolling() {
@@ -766,6 +767,24 @@ async function syncSharedLobbyDraft(draft) {
       appState: null,
     };
   }
+}
+
+async function refreshAuthoritativeDraftState(options = {}) {
+  const draftId = state.serverDraftId || state.serverDraft?.id;
+
+  if (!draftId) {
+    return null;
+  }
+
+  const draft = await fetchServerDraft(draftId);
+
+  syncServerDraftToState(draft);
+
+  if (options.syncLobby) {
+    await syncSharedLobbyDraft(draft);
+  }
+
+  return draft;
 }
 
 function randomizeTeams() {

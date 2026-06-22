@@ -1118,7 +1118,7 @@ app.patch('/api/discord-lobbies/:lobbyId/state', (req, res) => {
 
 app.post('/api/discord-lobbies/:lobbyId/sync-draft', (req, res) => {
   const { draftId } = req.body;
-  const draft = findDraft(draftId);
+  const draft = updateDraft(draftId, (currentDraft) => currentDraft);
 
   if (!draft) {
     return res.status(404).json({ error: 'Draft was not found.' });
